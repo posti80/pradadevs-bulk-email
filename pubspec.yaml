@@ -1,7 +1,7 @@
 name: pradadevs_bulk_email
-description: PRADA´DEVS Bulk Email Android MVP
+description: PRADADEVS Bulk Email
 publish_to: "none"
-version: 0.1.0+1
+version: 0.3.0+3
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -9,6 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  file_picker: ^8.1.7
+  excel: ^4.0.6
+  csv: ^6.0.0
+  shared_preferences: ^2.3.5
+  url_launcher: ^6.3.1
+  flutter_secure_storage: ^9.2.4
+  mailer: ^6.4.1
 
 dev_dependencies:
   flutter_test:
