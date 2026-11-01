@@ -1,17 +1,24 @@
+import 'dart:convert';
+
+import 'package:csv/csv.dart';
+import 'package:excel/excel.dart' as xls;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:mailer/mailer.dart';
-import 'package:mailer/smtp_server.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  runApp(const MyApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const PradaDevsApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class PradaDevsApp extends StatelessWidget {
+  const PradaDevsApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    const violet = Color(0xFF9B72FF);
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'PRADA´DEVS Bulk Email',
@@ -19,18 +26,21 @@ class MyApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF101018),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF9B72FF),
+          seedColor: violet,
           brightness: Brightness.dark,
         ),
-        useMaterial3: true,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF171722),
+          foregroundColor: Colors.white,
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF1B1B27),
+          fillColor: const Color(0xFF20202D),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: BorderSide.none,
+            borderRadius: BorderRadius.circular(12),
           ),
         ),
+        useMaterial3: true,
       ),
       home: const BulkEmailPage(),
     );
@@ -45,312 +55,319 @@ class BulkEmailPage extends StatefulWidget {
 }
 
 class _BulkEmailPageState extends State<BulkEmailPage> {
-  static const _storage = FlutterSecureStorage();
+  final List<String> recipients = [];
 
-  final _senderController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _recipientController = TextEditingController();
-  final _subjectController = TextEditingController();
-  final _messageController = TextEditingController();
+  final TextEditingController emailController =
+      TextEditingController();
 
-  final List<String> _recipients = [];
+  final TextEditingController subjectController =
+      TextEditingController();
 
-  String _provider = 'Gmail';
-  bool _saving = false;
-  bool _sending = false;
-  bool _hidePassword = true;
-  String _status = 'Noch nicht verbunden';
+  final TextEditingController messageController =
+      TextEditingController();
 
-  String get _host => _provider == 'Outlook'
-      ? 'smtp.office365.com'
-      : _provider == 'Yahoo'
-          ? 'smtp.mail.yahoo.com'
-          : 'smtp.gmail.com';
+  bool loading = false;
 
-  int get _port => 587;
+  static const String storageKey = 'pradadevs_recipients';
 
   @override
   void initState() {
     super.initState();
-    _loadSavedAccount();
-  }
-
-  Future<void> _loadSavedAccount() async {
-    final email = await _storage.read(key: 'sender_email');
-    final password = await _storage.read(key: 'smtp_password');
-    final provider = await _storage.read(key: 'smtp_provider');
-
-    if (!mounted) return;
-
-    setState(() {
-      _senderController.text = email ?? '';
-      _passwordController.text = password ?? '';
-
-      if (provider != null &&
-          ['Gmail', 'Outlook', 'Yahoo'].contains(provider)) {
-        _provider = provider;
-      }
-
-      if (email != null && password != null && password.isNotEmpty) {
-        _status = 'Zugangsdaten lokal gespeichert';
-      }
-    });
+    loadRecipients();
   }
 
   @override
   void dispose() {
-    _senderController.dispose();
-    _passwordController.dispose();
-    _recipientController.dispose();
-    _subjectController.dispose();
-    _messageController.dispose();
+    emailController.dispose();
+    subjectController.dispose();
+    messageController.dispose();
     super.dispose();
   }
 
-  void _addRecipient() {
-    final email = _recipientController.text.trim();
+  bool isValidEmail(String email) {
+    return RegExp(
+      r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$',
+    ).hasMatch(email.trim());
+  }
 
-    final valid =
-        RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
+  Future<void> loadRecipients() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(storageKey) ?? [];
 
-    if (!valid) {
-      _showMessage('Bitte eine gültige E-Mail-Adresse eingeben.');
-      return;
-    }
-
-    if (_recipients.any(
-      (item) => item.toLowerCase() == email.toLowerCase(),
-    )) {
-      _showMessage('Diese Adresse ist bereits in der Liste.');
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
-      _recipients.add(email);
-      _recipientController.clear();
+      recipients
+        ..clear()
+        ..addAll(saved);
     });
   }
 
-  Future<void> _saveAccount() async {
-    final email = _senderController.text.trim();
-    final password = _passwordController.text;
-
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email) ||
-        password.isEmpty) {
-      _showMessage(
-        'Bitte Absender-E-Mail und SMTP-Passwort eingeben.',
-      );
-      return;
-    }
-
-    setState(() => _saving = true);
-
-    try {
-      await _storage.write(key: 'sender_email', value: email);
-      await _storage.write(key: 'smtp_password', value: password);
-      await _storage.write(key: 'smtp_provider', value: _provider);
-
-      if (!mounted) return;
-
-      setState(() {
-        _status = 'Zugangsdaten sicher auf diesem Gerät gespeichert';
-      });
-
-      _showMessage('Zugangsdaten wurden lokal gespeichert.');
-    } catch (error) {
-      _showMessage('Speichern fehlgeschlagen: $error');
-    } finally {
-      if (mounted) {
-        setState(() => _saving = false);
-      }
-    }
+  Future<void> saveRecipients() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(storageKey, recipients);
   }
 
-  Future<void> _sendEmails() async {
-    final sender = _senderController.text.trim();
-    final password = _passwordController.text;
-    final subject = _subjectController.text.trim();
-    final body = _messageController.text.trim();
-
-    if (_recipients.isEmpty) {
-      _showMessage(
-        'Bitte zuerst mindestens einen Empfänger hinzufügen.',
-      );
-      return;
-    }
-
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(sender) ||
-        password.isEmpty) {
-      _showMessage(
-        'Bitte zuerst gültige SMTP-Zugangsdaten eintragen.',
-      );
-      return;
-    }
-
-    if (subject.isEmpty || body.isEmpty) {
-      _showMessage('Bitte Betreff und Nachricht ausfüllen.');
-      return;
-    }
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('E-Mails wirklich versenden?'),
-        content: Text(
-          'Es werden ${_recipients.length} einzelne E-Mail(s) '
-          'über $_provider versendet. Bitte stelle sicher, dass '
-          'alle Empfänger dem Erhalt zugestimmt haben.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Abbrechen'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Jetzt senden'),
-          ),
-        ],
-      ),
+  void showMessage(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text)),
     );
-
-    if (confirmed != true) return;
-
-    setState(() {
-      _sending = true;
-      _status = 'Versand läuft ...';
-    });
-
-    try {
-      final server = SmtpServer(
-        _host,
-        port: _port,
-        username: sender,
-        password: password,
-        ssl: false,
-      );
-
-      var sent = 0;
-      final failed = <String>[];
-
-      for (final recipient in List<String>.from(_recipients)) {
-        final email = Message()
-          ..from = Address(sender)
-          ..recipients.add(recipient)
-          ..subject = subject
-          ..text = body;
-
-        try {
-          await send(email, server);
-          sent++;
-        } catch (_) {
-          failed.add(recipient);
-        }
-      }
-
-      if (!mounted) return;
-
-      setState(() {
-        _status =
-            'Fertig: $sent gesendet, ${failed.length} fehlgeschlagen';
-      });
-
-      if (failed.isEmpty) {
-        _showMessage(
-          '$sent E-Mail(s) erfolgreich an den SMTP-Server übergeben.',
-        );
-      } else {
-        _showMessage(
-          '$sent gesendet, ${failed.length} fehlgeschlagen:\n'
-          '${failed.join('\n')}',
-        );
-      }
-    } catch (error) {
-      if (!mounted) return;
-
-      setState(() {
-        _status = 'Versand fehlgeschlagen';
-      });
-
-      _showMessage('SMTP-Verbindung fehlgeschlagen: $error');
-    } finally {
-      if (mounted) {
-        setState(() => _sending = false);
-      }
-    }
   }
 
-  Future<void> _clearSavedAccount() async {
-    await _storage.delete(key: 'sender_email');
-    await _storage.delete(key: 'smtp_password');
-    await _storage.delete(key: 'smtp_provider');
+  Future<void> addRecipient() async {
+    emailController.clear();
 
-    if (!mounted) return;
-
-    setState(() {
-      _senderController.clear();
-      _passwordController.clear();
-      _status = 'Zugangsdaten gelöscht';
-    });
-  }
-
-  void _showMessage(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-  }
-
-  Widget _sectionTitle(String title, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12, top: 22),
-      child: Row(
-        children: [
-          Icon(icon, color: const Color(0xFFB99AFF)),
-          const SizedBox(width: 10),
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Empfänger hinzufügen'),
+          content: TextField(
+            controller: emailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(
+              labelText: 'E-Mail-Adresse',
+              hintText: 'name@beispiel.de',
             ),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Abbrechen'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(
+                  context,
+                  emailController.text.trim(),
+                );
+              },
+              child: const Text('Hinzufügen'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || result.isEmpty) return;
+
+    final email = result.toLowerCase();
+
+    if (!isValidEmail(email)) {
+      showMessage('Bitte eine gültige E-Mail-Adresse eingeben.');
+      return;
+    }
+
+    if (recipients.contains(email)) {
+      showMessage('Diese Adresse ist bereits vorhanden.');
+      return;
+    }
+
+    setState(() {
+      recipients.add(email);
+    });
+
+    await saveRecipients();
+    showMessage('Empfänger hinzugefügt.');
+  }
+
+  Future<void> removeRecipient(String email) async {
+    setState(() {
+      recipients.remove(email);
+    });
+
+    await saveRecipients();
+  }
+
+  Future<void> importFile() async {
+    try {
+      setState(() => loading = true);
+
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'xlsx'],
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final file = result.files.first;
+      final bytes = file.bytes;
+
+      if (bytes == null) {
+        showMessage('Die Datei konnte nicht gelesen werden.');
+        return;
+      }
+
+      final extension = file.extension?.toLowerCase();
+      final Set<String> importedEmails = {};
+
+      if (extension == 'csv') {
+        final content = utf8.decode(
+          bytes,
+          allowMalformed: true,
+        );
+
+        final rows = const CsvToListConverter(
+          shouldParseNumbers: false,
+        ).convert(content);
+
+        for (final row in rows) {
+          for (final cell in row) {
+            final value = cell.toString().trim().toLowerCase();
+
+            if (isValidEmail(value)) {
+              importedEmails.add(value);
+            }
+          }
+        }
+      } else if (extension == 'xlsx') {
+        final workbook = xls.Excel.decodeBytes(bytes);
+
+        for (final sheet in workbook.tables.values) {
+          for (final row in sheet.rows) {
+            for (final cell in row) {
+              final value =
+                  cell?.value?.toString().trim().toLowerCase() ?? '';
+
+              if (isValidEmail(value)) {
+                importedEmails.add(value);
+              }
+            }
+          }
+        }
+      } else {
+        showMessage('Dieses Dateiformat wird nicht unterstützt.');
+        return;
+      }
+
+      final before = recipients.length;
+
+      setState(() {
+        recipients.addAll(
+          importedEmails.where(
+            (email) => !recipients.contains(email),
+          ),
+        );
+      });
+
+      await saveRecipients();
+
+      final added = recipients.length - before;
+
+      showMessage(
+        '$added neue Empfänger importiert.',
+      );
+    } catch (error) {
+      showMessage('Import fehlgeschlagen: $error');
+    } finally {
+      if (mounted) {
+        setState(() => loading = false);
+      }
+    }
+  }
+
+  Future<void> copyRecipients() async {
+    if (recipients.isEmpty) {
+      showMessage('Es sind noch keine Empfänger vorhanden.');
+      return;
+    }
+
+    await Clipboard.setData(
+      ClipboardData(text: recipients.join('; ')),
+    );
+
+    showMessage('Empfängerliste wurde kopiert.');
+  }
+
+  Future<void> prepareEmail() async {
+    if (recipients.isEmpty) {
+      showMessage('Bitte zuerst Empfänger hinzufügen.');
+      return;
+    }
+
+    if (subjectController.text.trim().isEmpty) {
+      showMessage('Bitte einen Betreff eingeben.');
+      return;
+    }
+
+    if (messageController.text.trim().isEmpty) {
+      showMessage('Bitte eine Nachricht eingeben.');
+      return;
+    }
+
+    final subject = subjectController.text.trim();
+    final message = messageController.text.trim();
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Versand vorbereitet'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Empfänger: ${recipients.length}'),
+                const SizedBox(height: 12),
+                const Text(
+                  'Betreff',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(subject),
+                const SizedBox(height: 12),
+                const Text(
+                  'Nachricht',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(message),
+                const SizedBox(height: 12),
+                const Text(
+                  'Die Nachricht wurde vorbereitet. '
+                  'Ein automatischer E-Mail-Versand ist '
+                  'noch nicht eingerichtet.',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Schließen'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(
+                    text: 'Betreff: $subject\n\n$message',
+                  ),
+                );
+
+                if (context.mounted) {
+                  Navigator.pop(context);
+                }
+
+                showMessage('Nachricht wurde kopiert.');
+              },
+              child: const Text('Nachricht kopieren'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _field(
-    TextEditingController controller,
-    String label, {
-    int lines = 1,
-    TextInputType keyboardType = TextInputType.text,
-    bool obscure = false,
-  }) {
-    return TextField(
-      controller: controller,
-      maxLines: obscure ? 1 : lines,
-      keyboardType: keyboardType,
-      obscureText: obscure && _hidePassword,
-      decoration: InputDecoration(
-        labelText: label,
-        suffixIcon: obscure
-            ? IconButton(
-                onPressed: () {
-                  setState(() {
-                    _hidePassword = !_hidePassword;
-                  });
-                },
-                icon: Icon(
-                  _hidePassword
-                      ? Icons.visibility
-                      : Icons.visibility_off,
-                ),
-              )
-            : null,
+  Widget sectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12, top: 20),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -361,197 +378,163 @@ class _BulkEmailPageState extends State<BulkEmailPage> {
       appBar: AppBar(
         title: const Text(
           'PRADA´DEVS',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            letterSpacing: 1.2,
-          ),
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
           IconButton(
-            tooltip: 'Zugangsdaten löschen',
-            onPressed: _clearSavedAccount,
-            icon: const Icon(Icons.delete_outline),
+            onPressed: loadRecipients,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Aktualisieren',
           ),
         ],
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+          padding: const EdgeInsets.all(18),
           children: [
             Container(
-              padding: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                   colors: [
-                    Color(0xFF30234E),
-                    Color(0xFF191925),
+                    Color(0xFF5736A8),
+                    Color(0xFF292044),
                   ],
                 ),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(18),
               ),
               child: const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Icon(
+                    Icons.mark_email_read_outlined,
+                    size: 38,
+                  ),
+                  SizedBox(height: 12),
                   Text(
-                    'BULK EMAIL',
+                    'Bulk Email Manager',
                     style: TextStyle(
-                      fontSize: 24,
+                      fontSize: 23,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  SizedBox(height: 6),
+                  SizedBox(height: 5),
                   Text(
-                    'Empfänger verwalten und E-Mails direkt '
-                    'per SMTP versenden.',
+                    'Deine Empfänger. Deine Nachrichten. '
+                    'Alles an einem Ort.',
                   ),
                 ],
               ),
             ),
 
-            _sectionTitle('1. E-Mail-Konto', Icons.mail_outline),
+            sectionTitle('Empfänger'),
 
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFF171722),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  DropdownButton<String>(
-                    value: _provider,
-                    isExpanded: true,
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'Gmail',
-                        child: Text('Gmail'),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  children: [
+                    Text(
+                      '${recipients.length}',
+                      style: const TextStyle(
+                        fontSize: 38,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFB18AFF),
                       ),
-                      DropdownMenuItem(
-                        value: 'Outlook',
-                        child: Text('Outlook'),
+                    ),
+                    const Text('Gespeicherte E-Mail-Adressen'),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: addRecipient,
+                            icon: const Icon(Icons.person_add),
+                            label: const Text('Hinzufügen'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: loading ? null : importFile,
+                        icon: const Icon(Icons.upload_file),
+                        label: const Text('CSV / Excel importieren'),
                       ),
-                      DropdownMenuItem(
-                        value: 'Yahoo',
-                        child: Text('Yahoo'),
+                    ),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: copyRecipients,
+                        icon: const Icon(Icons.copy),
+                        label: const Text('Adressen kopieren'),
                       ),
+                    ),
+                    if (loading) ...[
+                      const SizedBox(height: 12),
+                      const CircularProgressIndicator(),
                     ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _provider = value);
-                      }
-                    },
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  _field(
-                    _senderController,
-                    'Deine Absender-E-Mail',
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  _field(
-                    _passwordController,
-                    'SMTP-Passwort / App-Passwort',
-                    obscure: true,
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _saving ? null : _saveAccount,
-                      icon: const Icon(Icons.lock_outline),
-                      label: Text(
-                        _saving
-                            ? 'Speichert ...'
-                            : 'Zugangsdaten sicher speichern',
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  Text(
-                    'Server: $_host · Port: $_port (STARTTLS)',
-                    style: TextStyle(
-                      color: Colors.grey.shade400,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
 
-            _sectionTitle('2. Empfänger', Icons.people_outline),
+            sectionTitle('Empfängerliste'),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _recipientController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'E-Mail-Adresse',
-                      hintText: 'name@beispiel.de',
-                    ),
-                    onSubmitted: (_) => _addRecipient(),
+            if (recipients.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text(
+                    'Noch keine Empfänger vorhanden. '
+                    'Füge eine Adresse hinzu oder importiere eine Datei.',
+                    textAlign: TextAlign.center,
                   ),
                 ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  onPressed: _addRecipient,
-                  icon: const Icon(Icons.add),
-                  tooltip: 'Empfänger hinzufügen',
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-
-            if (_recipients.isEmpty)
-              const Text(
-                'Noch keine Empfänger hinzugefügt.',
-                style: TextStyle(color: Colors.white60),
               )
             else
-              ..._recipients.asMap().entries.map(
-                (entry) => Card(
-                  color: const Color(0xFF1B1B27),
+              ...recipients.map(
+                (email) => Card(
                   child: ListTile(
-                    dense: true,
-                    leading: CircleAvatar(
-                      backgroundColor: const Color(0xFF392A5A),
-                      child: Text('${entry.key + 1}'),
+                    leading: const CircleAvatar(
+                      child: Icon(Icons.email_outlined),
                     ),
-                    title: Text(entry.value),
+                    title: Text(email),
                     trailing: IconButton(
-                      tooltip: 'Entfernen',
-                      icon: const Icon(Icons.close),
-                      onPressed: () {
-                        setState(() {
-                          _recipients.remove(entry.value);
-                        });
-                      },
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        color: Colors.redAccent,
+                      ),
+                      onPressed: () => removeRecipient(email),
                     ),
                   ),
                 ),
               ),
 
-            _sectionTitle('3. Nachricht', Icons.edit_note),
+            sectionTitle('E-Mail erstellen'),
 
-            _field(_subjectController, 'Betreff'),
+            TextField(
+              controller: subjectController,
+              decoration: const InputDecoration(
+                labelText: 'Betreff',
+                prefixIcon: Icon(Icons.title),
+              ),
+            ),
 
-            const SizedBox(height: 10),
+            const SizedBox(height: 14),
 
-            _field(
-              _messageController,
-              'Nachricht',
-              lines: 7,
+            TextField(
+              controller: messageController,
+              minLines: 6,
+              maxLines: 10,
+              decoration: const InputDecoration(
+                labelText: 'Nachricht',
+                alignLabelWithHint: true,
+                prefixIcon: Icon(Icons.message_outlined),
+                hintText: 'Schreibe hier deine Nachricht ...',
+              ),
             ),
 
             const SizedBox(height: 20),
@@ -559,60 +542,26 @@ class _BulkEmailPageState extends State<BulkEmailPage> {
             SizedBox(
               height: 54,
               child: FilledButton.icon(
-                onPressed: _sending ? null : _sendEmails,
-                icon: _sending
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
-                      )
-                    : const Icon(Icons.send),
-                label: Text(
-                  _sending
-                      ? 'Versand läuft ...'
-                      : 'E-Mails versenden (${_recipients.length})',
+                onPressed: prepareEmail,
+                icon: const Icon(Icons.send),
+                label: const Text(
+                  'VERSAND VORBEREITEN',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
 
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1B1B27),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.info_outline,
-                    color: Color(0xFFB99AFF),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(_status),
-                  ),
-                ],
-              ),
+            const Text(
+              'PRADA´DEVS • Bulk Email Manager',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54),
             ),
 
-            const SizedBox(height: 18),
-
-            Text(
-              'Hinweis: SMTP-Zugangsdaten werden verschlüsselt '
-              'auf diesem Gerät gespeichert. Für Gmail ist '
-              'normalerweise ein App-Passwort erforderlich. '
-              'Versende nur an Empfänger, die dem Erhalt '
-              'zugestimmt haben, und beachte Versandlimits.',
-              style: TextStyle(
-                color: Colors.grey.shade500,
-                fontSize: 12,
-              ),
-            ),
+            const SizedBox(height: 20),
           ],
         ),
       ),
