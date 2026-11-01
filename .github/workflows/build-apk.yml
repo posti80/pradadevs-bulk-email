@@ -1,4 +1,4 @@
-name: PRADADEVS Android APK
+name: PRADADEVS Android APK V3
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download project
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - name: Install Flutter
@@ -25,14 +25,22 @@ jobs:
       - name: Create Android project
         run: flutter create . --platforms=android --org com.pradadevs
 
+      - name: Enable internet permission
+        run: |
+          sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET"/>' android/app/src/main/AndroidManifest.xml
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build APK
+      - name: Check Flutter code
+        run: flutter analyze
+
+      - name: Build Android APK
         run: flutter build apk --release
 
-      - name: Save APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PRADADEVS-Bulk-Email-APK
+          name: PRADADEVS-Bulk-Email-APK-V3
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
